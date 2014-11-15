@@ -7,17 +7,22 @@ from urllib.request import urlopen
 try:
     from chronyk import Chronyk
 except ImportError:
-    import pip
-    pip.main(['install', 'chronyk'])
-finally:
-    from chronyk import Chronyk
+    try:
+        import pip
+    except ImportError:
+        print("Please, install 'chronyk' module for Python 3 or 'python3-pip'.")
+        sys.exit(1)
+    else:
+        pip.main(['install', 'chronyk'])
+        from chronyk import Chronyk
+
 
 _frequency = 3600  # frequency of beacon probe between --from and --too, currently in hours
 _min_timestamp = 1378395540  # beacon start timestamp, could be 0 with current REST API implementation
 _main_url = 'https://beacon.nist.gov/rest/record/'
 _wrong_parameters_message = "\nWrong input parameters, please see help and try again."
 _host_unreachable = "Host {0} is unreachable.".format(_main_url)
-_host_unreachable_at_all = "\nHost {0} probably is down, exiting.".format(_main_url)
+_host_unreachable_at_all = "\nHost {0} is unreachable or doesn't return valid answer, exiting.".format(_main_url)
 _value_not_found = "\nOutput value wasn't found in xml from {0}".format(_main_url)
 _bad_time_received = "\nBad related time received, please see help and try again."
 _from_less_than_to = "\nRelative time in --from should predate relative time in --to"
@@ -49,41 +54,30 @@ optional arguments:
  """
 
 
-def get_xml(url):
-    # getting xml from REST API
-    xml = None
+def get_output_value(url):
+    # getting xml from REST API and parsing output value
     for x in range(0, 3):  # try 3 times
+        _wait_message = "Waiting 2 seconds for retry #{0}".format(x+1)
+        _retry_message = "Retrying..."
         try:
             xml = str(urlopen(url).read())
-            str_error = None
-        except IOError as str_error:
+        except IOError or ConnectionError:
             print(_host_unreachable)
-            pass
-        except ConnectionError as str_error:
-            print(_host_unreachable)
-            pass
-        if str_error:
-            print("Waiting 2 seconds for retry #{0}".format(x+1))
+            print(_wait_message)
             sleep(2)  # wait for 2 seconds before trying to fetch the data again
-            print("Retrying...")
+            print(_retry_message)
         else:
-            return xml
+            try:
+                output_value = re.search('<outputValue>(.*?)</outputValue>', xml).group(1)
+            except TypeError or ValueError:
+                print(_value_not_found)
+                print(_wait_message)
+                sleep(2)  # wait for 2 seconds before trying to fetch the data again
+                print(_retry_message)
+            else:
+                return output_value
     print(_host_unreachable_at_all)
     sys.exit(1)
-
-
-def parse_xml(xml):
-    # parsing output value in xml received from REST API
-    try:
-        output_value = re.search('<outputValue>(.*?)</outputValue>', xml).group(1)
-    except TypeError:
-        print(_value_not_found)
-        sys.exit(1)
-    except ValueError:
-        print(_value_not_found)
-        sys.exit(1)
-    else:
-        return output_value
 
 
 def validate_timestamps(from_timestamp, to_timestamp):
@@ -132,8 +126,7 @@ def get_summary_record(from_timestamp, to_timestamp):
     output_data = ""
     for index, timestamp in enumerate(timestamps_list):
         timestamp_url = _main_url+str(timestamp)
-        xml_from_timestamp = get_xml(timestamp_url)
-        record_from_timestamp = parse_xml(xml_from_timestamp)
+        record_from_timestamp = get_output_value(timestamp_url)
         try:
             output_data += record_from_timestamp
         except MemoryError:
@@ -152,15 +145,14 @@ def progress_bar(iteration, data_list):
     spaces = ' ' * (bar_length - len(hashes))
     sys.stdout.write("\rGetting {0} records: [{1}] {2}%".format(len(data_list), hashes + spaces, round(percent, 1)))
     sys.stdout.flush()
-	
+
 
 def main():
     # main block, processing received arguments and general flow
     args = sys.argv[1:]
     if len(args) == 0:
         last_url = _main_url+'last/'
-        last_xml = get_xml(last_url)
-        last_record = parse_xml(last_xml)
+        last_record = get_output_value(last_url)
         format_output_value(last_record)
     elif len(args) == 1:
         if not args[0] == "--help":
